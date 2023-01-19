@@ -12,12 +12,6 @@ use nom::{
     sequence::{preceded, tuple},
     IResult,
 };
-#[derive(Debug, Clone, PartialEq)]
-struct OptionSet {
-    scope: u8,
-    k: String,
-    v: String,
-}
 
 fn parse_line_set(input: &str) -> IResult<&str, OptionSet> {
     let (input, _) = multispace0(input)?;
@@ -51,11 +45,175 @@ fn token(i: &str) -> IResult<&str, &str> {
     take_while(is_token_char)(i)
 }
 
+fn quote_value(i: &str) -> IResult<&str, &str> {
+    let (i, (_, res, _)) = tuple((
+        tag("\""),
+        take_while(|x| is_alphanumeric(x as u8) || b"%.-_=|/();:".contains(&(x as u8))),
+        tag("\""),
+    ))(i)?;
+    Ok((i, res))
+}
+
+#[test]
+fn test_quote_value() {
+    let result = quote_value(r#""/s/ref=nb_sb_noss_1/167-3294888-0262949/field-keywords=books""#);
+    assert_eq!(
+        result.unwrap().1,
+        "/s/ref=nb_sb_noss_1/167-3294888-0262949/field-keywords=books"
+    );
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct OptionSet {
+    scope: u8,
+    k: String,
+    v: String,
+}
 #[derive(Debug, Clone, PartialEq)]
 struct OptionLocal {
     scope: String,
     options: Vec<OptionSet>,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+struct Options1 {
+    scope: String, // http-get
+    options: Vec<OptionSet>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Action {
+    base64,
+    prepend(String),
+    append(String),
+    header(String),
+    parameter(String),
+    print,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct WrapActions {
+    name: String, // metadata {}
+    actions: Vec<Action>,
+}
+#[derive(Debug, Clone, PartialEq)]
+struct Opt {
+    name: String,
+    k: String,
+    v: String,
+}
+
+// header "Accept" "*/*";
+// parameter "s" "3717";
+fn parse_opt(input: &str) -> IResult<&str, Opt> {
+    let (input, _) = multispace0(input)?;
+    let (input, name) = token(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, (k, _, v)) = tuple((quote_value, tag(" "), quote_value))(input)?; // bad
+                                                                                  // dbg!(input, name, k, v);
+    let (input, _) = tag(";")(input)?;
+    Ok((
+        input,
+        Opt {
+            name: name.to_string(),
+            k: k.to_string(),
+            v: v.to_string(),
+        },
+    ))
+}
+
+#[test]
+fn test_parse_opt() {
+    let input = r#"
+    header "Host" "www.amazon.com";
+    "#;
+    let result = parse_opt(input);
+    assert_eq!(
+        result.unwrap().1,
+        Opt {
+            name: "header".to_string(),
+            k: "Host".to_string(),
+            v: "www.amazon.com".to_string(),
+        }
+    )
+}
+
+fn parse_action(input: &str) -> IResult<&str, Action> {
+    let (input, _) = multispace0(input)?;
+    let (input, k) = token(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, value) = alt((quote_value, tag("")))(input)?; // bad
+                                                              // dbg!(input, k, value);
+    let (input, _) = tag(";")(input)?;
+    let action = match k {
+        "base64" => Action::base64,
+        "prepend" => Action::prepend(value.to_string()),
+        "append" => Action::append(value.to_string()),
+        "header" => Action::header(value.to_string()),
+        "parameter" => Action::parameter(value.to_string()),
+        "print" => Action::print,
+        _ => unimplemented!(),
+    };
+    Ok((input, action))
+}
+
+#[test]
+fn test_parse_action() {
+    let input = r#" prepend "session-token=";"#;
+    let result = parse_action(input);
+    assert_eq!(
+        result.unwrap().1,
+        Action::prepend("session-token=".to_string())
+    );
+    let input = r#"       base64;"#;
+    let result = parse_action(input);
+    assert_eq!(result.unwrap().1, Action::base64);
+}
+
+fn parse_actions(input: &str) -> IResult<&str, WrapActions> {
+    let (input, _) = multispace0(input)?;
+    let (input, scope) = token(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("{\n")(input)?;
+    let (input, actions) = many1(parse_action)(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("}\n")(input)?;
+    Ok((
+        input,
+        WrapActions {
+            name: scope.to_string(),
+            actions: actions,
+        },
+    ))
+}
+#[test]
+fn test_parse_actions() {
+    let input = r#"
+    metadata {
+        base64;
+        prepend "session-token=";
+        prepend "skin=noskin;";
+        append "csm-hit=s-24KU11BB82RZSYGJ3BDK|1419899012996";
+        header "Cookie";
+    }
+"#;
+    let result = parse_actions(input);
+    assert_eq!(
+        result.unwrap().1,
+        WrapActions {
+            name: "metadata".to_string(),
+            actions: [
+                Action::base64,
+                Action::prepend("session-token=".to_string(),),
+                Action::prepend("skin=noskin;".to_string(),),
+                Action::append("csm-hit=s-24KU11BB82RZSYGJ3BDK|1419899012996".to_string(),),
+                Action::header("Cookie".to_string(),),
+            ]
+            .to_vec()
+        }
+    );
+}
+
 fn parse_local(input: &str) -> IResult<&str, OptionLocal> {
     let (input, _) = multispace0(input)?;
     let (input, scope) = token(input)?;
@@ -75,6 +233,27 @@ fn parse_local(input: &str) -> IResult<&str, OptionLocal> {
 
 #[test]
 fn test_parse_local() {
+    let input = r#"
+http-get {
+    set uri "/s/ref=nb_sb_noss_1/167-3294888-0262949/field-keywords=books";
+    client {
+        header "Accept" "*/*";
+        header "Host" "www.amazon.com";
+        metadata {
+            base64;
+            prepend "session-token=";
+            prepend "skin=noskin;";
+            append "csm-hit=s-24KU11BB82RZSYGJ3BDK|1419899012996";
+            header "Cookie";
+        }
+    }
+    "#;
+    let result = parse_local(input);
+    dbg!(result);
+}
+
+#[test]
+fn test_parse_local1() {
     let input = r#"
 dns-beacon {
     set maxdns "255";
