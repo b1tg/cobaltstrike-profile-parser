@@ -48,7 +48,7 @@ fn token(i: &str) -> IResult<&str, &str> {
 fn quote_value(i: &str) -> IResult<&str, &str> {
     let (i, (_, res, _)) = tuple((
         tag("\""),
-        take_while(|x| is_alphanumeric(x as u8) || b"%.-_=|/();:".contains(&(x as u8))),
+        take_while(|x| is_alphanumeric(x as u8) || b"%.-_=|/();:*\\".contains(&(x as u8))),
         tag("\""),
     ))(i)?;
     Ok((i, res))
@@ -73,8 +73,87 @@ struct OptionSet {
 struct OptionLocal {
     scope: String,
     options: Vec<OptionSet>,
+    wrap_blocks: Vec<WrapBlock>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct WrapBlock {
+    opts: Vec<Opt>,
+    wrap_actions: WrapActions,
+}
+
+fn parse_wrap_block(input: &str) -> IResult<&str, ()> {
+    let (input, _) = multispace0(input)?;
+    let (input, scope) = token(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("{\n")(input)?;
+    let (input, opts) = many1(parse_opt)(input)?; // TODO: many0 and many1
+    let (input, wrap_actions) = parse_actions(input)?; // TODO: many0 and many1
+                                                       // alt((parse_actions, parse_opt))(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("}\n")(input)?;
+    dbg!(&opts, wrap_actions);
+    Ok((input, ()))
+}
+
+#[test]
+fn test_parse_wrap_block() {
+    let input = r#"
+    client {
+        header "Accept" "*/*";
+        header "Host" "www.amazon.com";
+        metadata {
+            base64;
+            prepend "session-token=";
+            prepend "skin=noskin;";
+            append "csm-hit=s-24KU11BB82RZSYGJ3BDK|1419899012996";
+            header "Cookie";
+        }
+    }
+    "#;
+    let result = parse_wrap_block(input);
+    dbg!(&result);
+}
+
+// fn parse_local(input: &str) -> IResult<&str, OptionLocal> {
+//     let (input, _) = multispace0(input)?;
+//     let (input, scope) = token(input)?;
+//     let (input, _) = multispace0(input)?;
+//     let (input, _) = tag("{\n")(input)?;
+//     // let (input, options) = many1(parse_line_set)(input)?; // TODO: many0 and many1
+//     alt((parse_line_set, parse))
+//     let (input, _) = multispace0(input)?;
+//     let (input, _) = tag("}\n")(input)?;
+//     Ok((
+//         input,
+//         OptionLocal {
+//             scope: scope.to_string(),
+//             options: options,
+//         },
+//     ))
+// }
+
+#[test]
+fn test_parse_local() {
+    let input = r#"
+http-get {
+    set uri "/s/ref=nb_sb_noss_1/167-3294888-0262949/field-keywords=books";
+    client {
+        header "Accept" "*/*";
+        header "Host" "www.amazon.com";
+        metadata {
+            base64;
+            prepend "session-token=";
+            prepend "skin=noskin;";
+            append "csm-hit=s-24KU11BB82RZSYGJ3BDK|1419899012996";
+            header "Cookie";
+        }
+    }
+}
+    "#;
+    // let result = parse_local(input);
+    // dbg!(result);
+}
 #[derive(Debug, Clone, PartialEq)]
 struct Options1 {
     scope: String, // http-get
@@ -214,74 +293,36 @@ fn test_parse_actions() {
     );
 }
 
-fn parse_local(input: &str) -> IResult<&str, OptionLocal> {
-    let (input, _) = multispace0(input)?;
-    let (input, scope) = token(input)?;
-    let (input, _) = multispace0(input)?;
-    let (input, _) = tag("{\n")(input)?;
-    let (input, options) = many1(parse_line_set)(input)?; // TODO: many0 and many1
-    let (input, _) = multispace0(input)?;
-    let (input, _) = tag("}\n")(input)?;
-    Ok((
-        input,
-        OptionLocal {
-            scope: scope.to_string(),
-            options: options,
-        },
-    ))
-}
-
-#[test]
-fn test_parse_local() {
-    let input = r#"
-http-get {
-    set uri "/s/ref=nb_sb_noss_1/167-3294888-0262949/field-keywords=books";
-    client {
-        header "Accept" "*/*";
-        header "Host" "www.amazon.com";
-        metadata {
-            base64;
-            prepend "session-token=";
-            prepend "skin=noskin;";
-            append "csm-hit=s-24KU11BB82RZSYGJ3BDK|1419899012996";
-            header "Cookie";
-        }
-    }
-    "#;
-    let result = parse_local(input);
-    dbg!(result);
-}
-
-#[test]
-fn test_parse_local1() {
-    let input = r#"
-dns-beacon {
-    set maxdns "255";
-    set aaaa "bbb";
-}
-    "#;
-    let result = parse_local(input);
-    // dbg!(result);
-    assert_eq!(
-        result.unwrap().1,
-        OptionLocal {
-            scope: "dns-beacon".to_string(),
-            options: [
-                OptionSet {
-                    scope: 0,
-                    k: "maxdns".to_string(),
-                    v: "255".to_string(),
-                },
-                OptionSet {
-                    scope: 0,
-                    k: "aaaa".to_string(),
-                    v: "bbb".to_string(),
-                },
-            ]
-            .to_vec(),
-        }
-    );
-}
+// #[test]
+// fn test_parse_local1() {
+//     let input = r#"
+// dns-beacon {
+//     set maxdns "255";
+//     set aaaa "bbb";
+// }
+//     "#;
+//     let result = parse_local(input);
+//     // dbg!(result);
+//     assert_eq!(
+//         result.unwrap().1,
+//         OptionLocal {
+//             scope: "dns-beacon".to_string(),
+//             options: [
+//                 OptionSet {
+//                     scope: 0,
+//                     k: "maxdns".to_string(),
+//                     v: "255".to_string(),
+//                 },
+//                 OptionSet {
+//                     scope: 0,
+//                     k: "aaaa".to_string(),
+//                     v: "bbb".to_string(),
+//                 },
+//             ]
+//             .to_vec(),
+//         }
+//     );
+// }
 
 #[test]
 fn test_parse_line_set() {
