@@ -1,7 +1,12 @@
-use nom::character::complete::multispace1;
+use std::fs::{read, read_dir};
+
+use nom::bytes::streaming::{escaped, is_not, take_until};
+use nom::character::complete::{anychar, multispace1};
 use nom::character::streaming::char;
 use nom::character::{is_newline, is_space};
-use nom::combinator::map;
+use nom::combinator::{map, opt};
+use nom::error::ParseError;
+use nom::multi::separated_list0;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_while, take_while_m_n},
@@ -30,14 +35,98 @@ fn token(i: &str) -> IResult<&str, &str> {
     take_while(is_token_char)(i)
 }
 
-fn spaces(i: &str) -> IResult<&str, &str> {
+fn spaces_origin(i: &str) -> IResult<&str, &str> {
     take_while(|x| is_space(x as u8) || is_newline(x as u8))(i)
 }
+use nom::character::streaming::none_of;
+use nom::Err::{Error, Failure, Incomplete};
+// eat from # to line end
+fn comment(i: &str) -> IResult<&str, &str> {
+    let (i, _) = spaces_origin(i)?;
+    let (i, _) = preceded(char('#'), many0(none_of("\n")))(i)?;
+    let (i, _) = spaces_origin(i)?;
+    return Ok((i, ""));
+}
 
+// fn cls(i: &str) -> IResult<&str, &str> {
+
+// }
+
+#[test]
+fn test_comment() {
+    // dbg!(many0(comment)("\n   # fafaf\n # 123\n fabc {"));
+    // dbg!(spaces("\n   # fafaf\n # 123\n fabc {"));
+    dbg!(spaces(" aa"));
+    // dbg!(comment("fabc {"));
+    // dbg!(spaces("   # fafaf\n # 123\n fabc {"));
+    // dbg!(many0(alt((comment, spaces_origin)))(" 12#afafaf\n#aaff\n"));
+    // dbg!(spaces_origin("\n#aaff\n"));
+    // dbg!(comment("#aaff\n"));
+    // dbg!(spaces_origin("\n"));
+    // dbg!(comment(""));
+    // let i = "#afafaf\n#aaff\n";
+    // let mut p = alt((spaces_origin, comment));
+    // let mut p = comment;
+    // let (i, _) = p(i).unwrap();
+    // dbg!(i);
+    // let (i, _) = p(i).unwrap();
+    // dbg!(i);
+    // let (i, _) = p(i).unwrap();
+    // let (i, _) = p(i).unwrap();
+    // let (i, _) = p(i).unwrap();
+    // let (i, _) = p(i).unwrap();
+    // let (i, _) = p(i).unwrap();
+    // let (i, _) = p(i).unwrap();
+}
+
+// spaces_and_comment
+fn spaces(i: &str) -> IResult<&str, &str> {
+    let (i, _) = spaces_origin(i)?;
+    if (i.is_empty()) {
+        return Ok((i, ""));
+    }
+    // let (i, _) = comment(i)?;
+    let (i, _) = many0(comment)(i)?;
+    return Ok((i, ""));
+    // let (i, _) = many0(alt((spaces_origin, comment)))(i)?;
+    // Ok((i, ""))
+    // loop {
+    // println!("remain2... {}", i);
+
+    // let (i, (_, _, _, comment)) = tuple((spaces_origin, tag("#"), spaces_origin, take_while(|x: char|(x!='\r' && x != '\n'))))(i)?;
+    // let (i, _) = spaces_origin(i)?;
+
+    // println!("remain1... {}", i);
+    // if !i.starts_with("#") {
+    //     return Ok((i, ""))
+    // } else {
+
+    // }
+    // }
+    // Ok((i, comment))
+}
+// fn spaces(i: &str) -> IResult<&str, &str> {
+
+//         let (i, _) = many0(space)(i)?;
+//         Ok((i, ""))
+// }
+
+// fn spaces_and_comment(i: &str) -> IResult<&str, &str> {
+//     let (i, _) = many0(alt((comment, spaces)))(i)?;
+//     Ok((i, ""))
+// }
+
+// current cant handle escape quote in quote
+// https://stackoverflow.com/questions/58904604/parsing-single-quoted-string-with-escaped-quotes-with-nom-5
 fn quote_value(i: &str) -> IResult<&str, &str> {
+    let esc = escaped(none_of("\\\""), '\\', tag("\""));
+    let esc_or_empty = alt((esc, tag("")));
     let (i, (_, res, _)) = tuple((
         tag("\""),
-        take_while(|x| is_alphanumeric(x as u8) || b" %.-_=|/();:*\\".contains(&(x as u8))),
+        esc_or_empty,
+        // take_while(|x| is_alphanumeric(x as u8) || b" @%.,~@#$^&*-_=|/();:*\\".contains(&(x as u8))),
+        // is_not("\""),
+        // take
         tag("\""),
     ))(i)?;
     Ok((i, res))
@@ -50,9 +139,16 @@ fn test_quote_value() {
         result.unwrap().1,
         "/s/ref=nb_sb_noss_1/167-3294888-0262949/field-keywords=books"
     );
-    dbg!(quote_value(
-        r#""Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko""#
-    ));
+    assert_eq!(quote_value(
+            r#""Mozilla/5.0 (compatible, MSIE 11, Windows NT 6.3; Trident/7.0; rv:11.0) like Gecko""#
+        ).unwrap().1,
+        "Mozilla/5.0 (compatible, MSIE 11, Windows NT 6.3; Trident/7.0; rv:11.0) like Gecko"
+    );
+    assert_eq!(quote_value(r#""中文ok""#).unwrap().1, "中文ok");
+    // dbg!(quote_value(r#""<!DOCTYPE html><html lang=\"en\" xml:lang=\"en\" xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:Web=\"http://schemas.live.com/Web/\"><script type=\"text/javascript\">//<![CDATA[si_ST=new Date;//]]></script><head><!--pc--><title>Bing</title><meta content=\"text/html; charset=utf-8\" http-equiv=\"content-type\" /><link href=\"/search?format=rss&amp;q=canary&amp;go=Search&amp;qs=bs&amp;form=QBRE\" rel=\"alternate\" title=\"XML\" type=\"text/xml\" /><link href=\"/search?format=rss&amp;q=canary&amp;go=Search&amp;qs=bs&amp;form=QBRE\" rel=\"alternate\" title=\"RSS\" type=\"application/rss+xml\" /><link href=\"/sa/simg/bing_p_rr_teal_min.ico\" rel=\"shortcut icon\" /><script type=\"text/javascript\">//<![CDATA[""#));
+    // TODO:
+    // dbg!(quote_value(r#""\\x63\\x02""#));
+    dbg!(quote_value(r#""%s <%s> (Type=%i, Access=%i, ID='%s')";"#));
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -154,15 +250,21 @@ struct Options1 {
     scope: String, // http-get
     options: Vec<OptionSet>,
 }
-
+// https://hstechdocs.helpsystems.com/manuals/cobaltstrike/current/userguide/content/topics/malleable-c2_profile-language.htm#_Toc65482837
 #[derive(Debug, Clone, PartialEq)]
 enum Action {
-    base64,
-    prepend(String),
     append(String),
+    base64,
+    base64url,
+    mask,
+    netbios,
+    netbiosu,
+    prepend(String),
+    // termination statements
     header(String),
     parameter(String),
     print,
+    uri_append,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -209,21 +311,49 @@ enum set_option_or_role_indicators {
     role_indicators(RoleIndicator),
 }
 
+use nom::{InputLength, Parser};
 #[derive(Debug, Clone, PartialEq)]
 enum set_option_or_protocol_transaction {
     set(OptionSet),
     protocol(ProtocolTransaction),
 }
 
+// fn alt_two<I, O1, O2, E, F1, F2>(
+//     f1: F1,
+//     f2: F2,
+// ) -> impl FnMut(I) -> IResult<I, (Vec<O1>, Vec<O2>), E>
+// where
+//     I: Clone + InputLength,
+//     F1: Parser<I, O1, E>,
+//     F2: Parser<I, O2, E>,
+//     E: ParseError<I>,
+// {
+
+//     let mut o1: Vec<O1> = vec![];
+//     let mut o2: Vec<O2> = vec![];
+//     Ok((o1, o2))
+//     #[derive(Debug, Clone, PartialEq)]
+//     enum two_choices {
+//         o1(O1),
+//         o2(O2),
+//     }
+//     fn abc()
+// }
+
 fn parse_profile(input: &str) -> IResult<&str, Profile> {
     let mut profile = Profile::default();
+
+    // let mut p0 = parse_set_option_local.or(parse_protocol_transaction);
+    // let (input, _) = p0(input)?;
     let p1 = map(parse_set_option_local, |x| {
         set_option_or_protocol_transaction::set(x)
     });
     let p2 = map(parse_protocol_transaction, |x| {
         set_option_or_protocol_transaction::protocol(x)
     });
+    dbg!(11111);
     let (input, a_or_b_list) = many0(alt((p1, p2)))(input)?;
+    dbg!(22222);
     for a_or_b in a_or_b_list {
         match a_or_b {
             set_option_or_protocol_transaction::set(x) => {
@@ -239,6 +369,7 @@ fn parse_profile(input: &str) -> IResult<&str, Profile> {
 }
 
 fn parse_protocol_transaction(input: &str) -> IResult<&str, ProtocolTransaction> {
+    println!("parse_protocol_transaction1: {}({})", input, input.len());
     let (input, _) = spaces(input)?; // spaces("\n    ")  Incomplete(Size(1)
     let (input, proto) = token(input)?;
     let (input, _) = spaces(input)?;
@@ -264,14 +395,19 @@ fn parse_protocol_transaction(input: &str) -> IResult<&str, ProtocolTransaction>
             }
         }
     }
+    println!("parse_protocol_transaction2: {}", input);
     let (input, _) = spaces(input)?;
-    let (input, _) = tag("}\n")(input)?;
+    println!("parse_protocol_transaction3: {}", input);
+    let (input, _) = tag("}")(input)?;
+    println!("parse_protocol_transaction4: {}", input);
     Ok((input, transaction))
 }
 
 fn parse_set_option_local(input: &str) -> IResult<&str, OptionSet> {
+    println!("parse_set_option_local: {}({})", input, input.len());
     let (input, _) = spaces(input)?;
-    let (input, _) = tag("set ")(input)?;
+    let (input, _) = tag("set")(input)?;
+    let (input, _) = spaces(input)?;
     let (input, k) = token(input)?;
     let (input, (_, v)) = tuple((spaces, quote_value))(input)?;
     // let (input, _) = spaces(input)?;
@@ -346,8 +482,8 @@ fn parse_indicator_set_kv(input: &str) -> IResult<&str, IndicatorOpt> {
     let (input, _) = spaces(input)?;
     let (input, name) = token(input)?;
     let (input, _) = spaces(input)?;
-    let (input, (k, _, v)) = tuple((quote_value, tag(" "), quote_value))(input)?; // bad
-                                                                                  // dbg!(input, name, k, v);
+    let (input, (k, _, v)) = tuple((quote_value, spaces, quote_value))(input)?; // bad
+                                                                                // dbg!(input, name, k, v);
     let (input, _) = tag(";")(input)?;
     Ok((
         input,
@@ -373,7 +509,12 @@ fn parse_transform_action(input: &str) -> IResult<&str, Action> {
         "header" => Action::header(value.to_string()),
         "parameter" => Action::parameter(value.to_string()),
         "print" => Action::print,
-        _ => unimplemented!(),
+        "base64url" => Action::base64url,
+        "netbios" => Action::netbios,
+        "uri-append" => Action::uri_append,
+        "mask" => Action::mask,
+        "netbiosu" => Action::netbiosu,
+        _ => unimplemented!("unknow action {}\n", k),
     };
     Ok((input, action))
 }
@@ -433,6 +574,7 @@ fn test_parse_indicator_set_kv() {
             v: "160x600".to_string(),
         }
     );
+    dbg!(parse_indicator_set_kv(r#"strrep "sz"   "sz";"#));
 }
 #[test]
 fn test_parse_transform_actions() {
@@ -488,8 +630,16 @@ dns-beacon {
     set maxdns "255";
 }
     "#;
-    let result = many0(parse_set_option_local)(input);
-    dbg!(result);
+    // dbg!(spaces(input));
+    // let (input, (_, v)) = tuple((spaces, quote_value))(" \"5000\";").unwrap();
+    // let (input, _) = spaces(" \"5000\";").unwrap();
+    // dbg!(input);
+    // let result = many0(parse_set_option_local)(input);
+    // dbg!(result);
+    dbg!(parse_set_option_local(
+        r#"set rich_header    "\x63\x02\x25\x0f\x27\x63\x4b\x5c\x27\x63\x4b\x5c\x27\x63\x4b\x5c\x9a\x2c\xdd\x5c\x24\x63\x4b\x5c\x2e\x1b\xde\x5c\x3b\x63\x4b\x5c\x2e\x1b\xcf\x5c\x1b\x63\x4b\x5c\x2e\x1b\xc8\x5c\x8f\x63\x4b\x5c\x00\xa5\x30\x5c\x28\x63\x4b\x5c\x27\x63\x4a\x5c\x97\x63\x4b\x5c\x2e\x1b\xc1\x5c\x60\x63\x4b\x5c\x2e\x1b\xd9\x5c\x26\x63\x4b\x5c\x39\x31\xdf\x5c\x26\x63\x4b\x5c\x2e\x1b\xda\x5c\x26\x63\x4b\x5c\x52\x69\x63\x68\x27\x63\x4b\x5c\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+    "#
+    ));
 }
 
 #[test]
@@ -584,91 +734,49 @@ fn test_parse_role_indicators() {
 }
 
 #[test]
-fn test_parse_profile() {
+fn test_123() {
     let input = r#"
-    set sleeptime "5000";
-    set jitter    "0";
-    set useragent "Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko";
-    dns-beacon {
-        set maxdns "255";
-    }
-
-    http-get {
-
-        set uri "/s/ref=nb_sb_noss_1/167-3294888-0262949/field-keywords=books";
-
-        client {
-
-            header "Accept" "*/*";
-            header "Host" "www.amazon.com";
-
-            metadata {
-                base64;
-                prepend "session-token=";
-                prepend "skin=noskin;";
-                append "csm-hit=s-24KU11BB82RZSYGJ3BDK|1419899012996";
-                header "Cookie";
-            }
-        }
-
-        server {
-
-            header "Server" "Server";
-            header "x-amz-id-1" "THKUYEZKCKPGY5T42PZT";
-            header "x-amz-id-2" "a21yZ2xrNDNtdGRsa212bGV3YW85amZuZW9ydG5rZmRuZ2tmZGl4aHRvNDVpbgo=";
-            header "X-Frame-Options" "SAMEORIGIN";
-            header "Content-Encoding" "gzip";
-
-            output {
-                print;
-            }
-        }
-    }
-
-    http-post {
-
-        set uri "/N4215/adj/amzn.us.sr.aps";
-
-        client {
-
-            header "Accept" "*/*";
-            header "Content-Type" "text/xml";
-            header "X-Requested-With" "XMLHttpRequest";
-            header "Host" "www.amazon.com";
-
-            parameter "sz" "160x600";
-            parameter "oe" "oe=ISO-8859-1;";
-
-            id {
-                parameter "sn";
-            }
-
-            parameter "s" "3717";
-            parameter "dc_ref" "http%3A%2F%2Fwww.amazon.com";
-
-            output {
-                base64;
-                print;
-            }
-        }
-
-        server {
-
-            header "Server" "Server";
-            header "x-amz-id-1" "THK9YEZJCKPGY5T42OZT";
-            header "x-amz-id-2" "a21JZ1xrNDNtdGRsa219bGV3YW85amZuZW9zdG5rZmRuZ2tmZGl4aHRvNDVpbgo=";
-            header "X-Frame-Options" "SAMEORIGIN";
-            header "x-ua-compatible" "IE=edge";
-
-            output {
-                print;
-            }
-        }
-    }
-
 
     "#;
-    let result = parse_profile(input);
+    // let a = parse_protocol_transaction(input);
+    // dbg!(a);
+    dbg!(parse_profile(""));
+}
+
+#[test]
+fn test_parse_malleable_c2_profiles() {
+    use walkdir::WalkDir;
+    for entry in WalkDir::new("Malleable-C2-Profiles\\") {
+        let entry = entry.unwrap();
+        let p = entry.path();
+        // println!("{:?} {:?}", p,  p.extension());
+        if p.extension() != Some(std::ffi::OsStr::new("profile")) {
+            continue;
+        }
+        let input = std::fs::read_to_string(p).unwrap();
+        let input = input.replace("\r\n", "\n");
+        let _ = parse_profile(&input).expect(p.to_str().unwrap());
+    }
+}
+
+#[test]
+fn test_parse_profile() {
+    // let input = include_str!("..\\Malleable-C2-Profiles\\normal\\bingsearch_getonly.profile"); // ok
+    let input = include_str!("..\\Malleable-C2-Profiles\\APT\\havex.profile"); // ok
+    let input = input.replace("\r\n", "\n");
+    let input = input.replace("\t", "    ");
+    let result = parse_profile(&input);
+    dbg!(result);
+}
+
+#[test]
+fn test_parse_profile1() {
+    let input = r#"
+    "#;
+    let input = include_str!("..\\amazon.profile");
+    let input = input.replace("\r\n", "\n");
+    // let input = include_str!("..\\Malleable-C2-Profiles\\normal\\bingsearch_getonly.profile");
+    let result = parse_profile(&input);
     // dbg!(result);
     assert_eq!(result.unwrap().1,
             Profile {
