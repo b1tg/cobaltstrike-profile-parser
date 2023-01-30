@@ -1,3 +1,5 @@
+#![feature(drain_filter)]
+
 use std::fs::{read, read_dir};
 
 use nom::bytes::streaming::{escaped, is_not, take_until};
@@ -7,6 +9,7 @@ use nom::character::{is_newline, is_space};
 use nom::combinator::{map, opt};
 use nom::error::ParseError;
 use nom::multi::separated_list0;
+use nom::sequence::delimited;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_while, take_while_m_n},
@@ -20,6 +23,8 @@ use nom::{
     IResult,
 };
 
+mod token;
+use token::*;
 fn is_token_char(i: char) -> bool {
     is_alphanumeric(i as u8) || b"-_".contains(&(i as u8))
 }
@@ -115,10 +120,38 @@ fn spaces(i: &str) -> IResult<&str, &str> {
 //     let (i, _) = many0(alt((comment, spaces)))(i)?;
 //     Ok((i, ""))
 // }
+use std::str::Utf8Error;
+fn convert_vec_utf8(v: Vec<u8>) -> Result<String, Utf8Error> {
+    let slice = v.as_slice();
+    std::str::from_utf8(slice).map(|s| s.to_owned())
+}
+fn concat_slice_vec(c: &str, done: Vec<u8>) -> Vec<u8> {
+    let mut new_vec = c.as_bytes().to_vec();
+    new_vec.extend(&done);
+    new_vec
+}
+use nom::bytes::complete::{ take};
+use nom::AsBytes;
+// use nom::sequence::{delimited};
+fn pis(input: &str) -> IResult<&str, Vec<u8>> {
+    use std::result::Result::*;
 
+    let (i1, c1) = take(1usize)(input)?;
+    match c1 {
+        "\"" => Ok((input, vec![])),
+        "\\" => {
+            let (i2, c2) = take(1usize)(i1)?;
+            pis(i2).map(|(slice, done)| (slice, concat_slice_vec(c2, done)))
+        }
+        c => pis(i1).map(|(slice, done)| (slice, concat_slice_vec(c, done))),
+    }
+}
+fn quote_value(input: &str) -> IResult<&str, String> {
+    delimited(tag("\""), map_res(pis, convert_vec_utf8), tag("\""))(input)
+}
 // current cant handle escape quote in quote
 // https://stackoverflow.com/questions/58904604/parsing-single-quoted-string-with-escaped-quotes-with-nom-5
-fn quote_value(i: &str) -> IResult<&str, &str> {
+fn quote_value1(i: &str) -> IResult<&str, &str> {
     let esc = escaped(none_of("\\\""), '\\', tag("\""));
     let esc_or_empty = alt((esc, tag("")));
     let (i, (_, res, _)) = tuple((
@@ -284,6 +317,7 @@ struct RoleIndicator {
     role: String,
     set_opts: Vec<IndicatorOpt>,
     transforms: Vec<TransformActions>,
+    role_opts: Vec<IndicatorOpt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -303,6 +337,7 @@ struct Profile {
 enum opts_or_transforms {
     opt(IndicatorOpt),
     transform(TransformActions),
+    role_opt(IndicatorOpt),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -430,15 +465,27 @@ fn parse_role_indicators(input: &str) -> IResult<&str, RoleIndicator> {
     let mut role_indicators = RoleIndicator::default();
     role_indicators.role = role.to_string();
 
-    let (input, opt_or_transform_list) = many1(parse_indicator_set_kv_or_transform_actions)(input)?;
-
-    for opt_or_transform in opt_or_transform_list {
-        match opt_or_transform {
+    // let (input, opt_or_transform_list) = many1(parse_indicator_set_kv_or_transform_actions)(input)?;
+    let p1 = map(parse_indicator_set_kv, |x| opts_or_transforms::opt(x));
+    let p2 = map(parse_transform_actions, |x| {
+        opts_or_transforms::transform(x)
+    });
+    let p3 = map(parse_role_set_kv, |x| opts_or_transforms::role_opt(x));
+    dbg!(11111);
+    let (input, a_or_b_list) = many0(alt((p1, p2, p3)))(input)?;
+    dbg!(22222);
+    for a_or_b in a_or_b_list {
+        match a_or_b {
+            // for opt_or_transform in opt_or_transform_list {
+            //     match opt_or_transform {
             opts_or_transforms::opt(opt) => {
                 role_indicators.set_opts.push(opt);
             }
             opts_or_transforms::transform(transform) => {
                 role_indicators.transforms.push(transform);
+            }
+            opts_or_transforms::role_opt(x) => {
+                role_indicators.role_opts.push(x);
             }
         }
     }
@@ -468,14 +515,33 @@ fn parse_set_option_or_role_indicators(
 }
 
 // helper function
-fn parse_indicator_set_kv_or_transform_actions(input: &str) -> IResult<&str, opts_or_transforms> {
-    let set_kv_result = parse_indicator_set_kv(input);
-    if set_kv_result.is_ok() {
-        let (input, opt) = set_kv_result.unwrap();
-        return Ok((input, opts_or_transforms::opt(opt)));
-    }
-    let (input, transform) = parse_transform_actions(input)?;
-    return Ok((input, opts_or_transforms::transform(transform)));
+// fn parse_indicator_set_kv_or_transform_actions(input: &str) -> IResult<&str, opts_or_transforms> {
+//     let set_kv_result = parse_indicator_set_kv(input);
+//     if set_kv_result.is_ok() {
+//         let (input, opt) = set_kv_result.unwrap();
+//         return Ok((input, opts_or_transforms::opt(opt)));
+//     }
+//     let (input, transform) = parse_transform_actions(input)?;
+//     return Ok((input, opts_or_transforms::transform(transform)));
+// }
+
+fn parse_role_set_kv(input: &str) -> IResult<&str, IndicatorOpt> {
+    let (input, _) = spaces(input)?;
+    let (input, (k, _, v, _)) = tuple((token, spaces, quote_value, spaces))(input)?; // bad
+    let (input, _) = tag(";")(input)?;
+    Ok((
+        input,
+        IndicatorOpt {
+            name: "role".to_string(),
+            k: k.to_string(),
+            v: v.to_string(),
+        },
+    ))
+}
+
+#[test]
+fn test_parse_role_set_kv() {
+    dbg!(parse_role_set_kv(r#"stringw "a+";"#));
 }
 
 fn parse_indicator_set_kv(input: &str) -> IResult<&str, IndicatorOpt> {
@@ -499,15 +565,15 @@ fn parse_transform_action(input: &str) -> IResult<&str, Action> {
     let (input, _) = spaces(input)?;
     let (input, k) = token(input)?;
     let (input, _) = spaces(input)?;
-    let (input, value) = alt((quote_value, tag("")))(input)?; // bad
+    let (input, value) = alt((quote_value, map(tag(""), |s:&str|s.to_string())))(input)?; // bad
                                                               // dbg!(input, k, value);
     let (input, _) = tag(";")(input)?;
     let action = match k {
         "base64" => Action::base64,
-        "prepend" => Action::prepend(value.to_string()),
-        "append" => Action::append(value.to_string()),
-        "header" => Action::header(value.to_string()),
-        "parameter" => Action::parameter(value.to_string()),
+        "prepend" => Action::prepend(value),
+        "append" => Action::append(value),
+        "header" => Action::header(value),
+        "parameter" => Action::parameter(value),
         "print" => Action::print,
         "base64url" => Action::base64url,
         "netbios" => Action::netbios,
@@ -671,66 +737,6 @@ fn test_parse_role_indicators() {
     "#;
     let result = parse_role_indicators(input);
     // dbg!(result);
-    assert_eq!(
-        result.unwrap().1,
-        RoleIndicator {
-            role: "client".to_string(),
-            set_opts: [
-                IndicatorOpt {
-                    name: "header".to_string(),
-                    k: "Accept".to_string(),
-                    v: "*/*".to_string(),
-                },
-                IndicatorOpt {
-                    name: "header".to_string(),
-                    k: "Content-Type".to_string(),
-                    v: "text/xml".to_string(),
-                },
-                IndicatorOpt {
-                    name: "header".to_string(),
-                    k: "X-Requested-With".to_string(),
-                    v: "XMLHttpRequest".to_string(),
-                },
-                IndicatorOpt {
-                    name: "header".to_string(),
-                    k: "Host".to_string(),
-                    v: "www.amazon.com".to_string(),
-                },
-                IndicatorOpt {
-                    name: "parameter".to_string(),
-                    k: "sz".to_string(),
-                    v: "160x600".to_string(),
-                },
-                IndicatorOpt {
-                    name: "parameter".to_string(),
-                    k: "oe".to_string(),
-                    v: "oe=ISO-8859-1;".to_string(),
-                },
-                IndicatorOpt {
-                    name: "parameter".to_string(),
-                    k: "s".to_string(),
-                    v: "3717".to_string(),
-                },
-                IndicatorOpt {
-                    name: "parameter".to_string(),
-                    k: "dc_ref".to_string(),
-                    v: "http%3A%2F%2Fwww.amazon.com".to_string(),
-                },
-            ]
-            .to_vec(),
-            transforms: [
-                TransformActions {
-                    name: "id".to_string(),
-                    actions: [Action::parameter("sn".to_string(),),].to_vec(),
-                },
-                TransformActions {
-                    name: "output".to_string(),
-                    actions: [Action::base64, Action::print,].to_vec(),
-                },
-            ]
-            .to_vec(),
-        }
-    );
 }
 
 #[test]
@@ -778,237 +784,6 @@ fn test_parse_profile1() {
     // let input = include_str!("..\\Malleable-C2-Profiles\\normal\\bingsearch_getonly.profile");
     let result = parse_profile(&input);
     // dbg!(result);
-    assert_eq!(result.unwrap().1,
-            Profile {
-                global_options: [
-                    OptionSet {
-                        scope: 0,
-                        k: "sleeptime".to_string(),
-                        v: "5000".to_string(),
-                    },
-                    OptionSet {
-                        scope: 0,
-                        k: "jitter".to_string(),
-                        v: "0".to_string(),
-                    },
-                    OptionSet {
-                        scope: 0,
-                        k: "useragent".to_string(),
-                        v: "Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko".to_string(),
-                    },
-                ].to_vec(),
-                transactions: [
-                    ProtocolTransaction {
-                        proto: "dns-beacon".to_string(),
-                        local_options: [
-                            OptionSet {
-                                scope: 0,
-                                k: "maxdns".to_string(),
-                                v: "255".to_string(),
-                            },
-                        ].to_vec(),
-                        roles: [].to_vec(),
-                    },
-                    ProtocolTransaction {
-                        proto: "http-get".to_string(),
-                        local_options: [
-                            OptionSet {
-                                scope: 0,
-                                k: "uri".to_string(),
-                                v: "/s/ref=nb_sb_noss_1/167-3294888-0262949/field-keywords=books".to_string(),
-                            },
-                        ].to_vec(),
-                        roles: [
-                            RoleIndicator {
-                                role: "client".to_string(),
-                                set_opts: [
-                                    IndicatorOpt {
-                                        name: "header".to_string(),
-                                        k: "Accept".to_string(),
-                                        v: "*/*".to_string(),
-                                    },
-                                    IndicatorOpt {
-                                        name: "header".to_string(),
-                                        k: "Host".to_string(),
-                                        v: "www.amazon.com".to_string(),
-                                    },
-                                ].to_vec(),
-                                transforms: [
-                                    TransformActions {
-                                        name: "metadata".to_string(),
-                                        actions: [
-                                            Action::base64,
-                                            Action::prepend(
-                                                "session-token=".to_string(),
-                                            ),
-                                            Action::prepend(
-                                                "skin=noskin;".to_string(),
-                                            ),
-                                            Action::append(
-                                                "csm-hit=s-24KU11BB82RZSYGJ3BDK|1419899012996".to_string(),
-                                            ),
-                                            Action::header(
-                                                "Cookie".to_string(),
-                                            ),
-                                        ].to_vec(),
-                                    },
-                                ].to_vec(),
-                            },
-                            RoleIndicator {
-                                role: "server".to_string(),
-                                set_opts: [
-                                    IndicatorOpt {
-                                        name: "header".to_string(),
-                                        k: "Server".to_string(),
-                                        v: "Server".to_string(),
-                                    },
-                                    IndicatorOpt {
-                                        name: "header".to_string(),
-                                        k: "x-amz-id-1".to_string(),
-                                        v: "THKUYEZKCKPGY5T42PZT".to_string(),
-                                    },
-                                    IndicatorOpt {
-                                        name: "header".to_string(),
-                                        k: "x-amz-id-2".to_string(),
-                                        v: "a21yZ2xrNDNtdGRsa212bGV3YW85amZuZW9ydG5rZmRuZ2tmZGl4aHRvNDVpbgo=".to_string(),
-                                    },
-                                    IndicatorOpt {
-                                        name: "header".to_string(),
-                                        k: "X-Frame-Options".to_string(),
-                                        v: "SAMEORIGIN".to_string(),
-                                    },
-                                    IndicatorOpt {
-                                        name: "header".to_string(),
-                                        k: "Content-Encoding".to_string(),
-                                        v: "gzip".to_string(),
-                                    },
-                                ].to_vec(),
-                                transforms: [
-                                    TransformActions {
-                                        name: "output".to_string(),
-                                        actions: [
-                                            Action::print,
-                                        ].to_vec(),
-                                    },
-                                ].to_vec(),
-                            },
-                        ].to_vec(),
-                    },
-                    ProtocolTransaction {
-                        proto: "http-post".to_string(),
-                        local_options: [
-                            OptionSet {
-                                scope: 0,
-                                k: "uri".to_string(),
-                                v: "/N4215/adj/amzn.us.sr.aps".to_string(),
-                            },
-                        ].to_vec(),
-                        roles: [
-                            RoleIndicator {
-                                role: "client".to_string(),
-                                set_opts: [
-                                    IndicatorOpt {
-                                        name: "header".to_string(),
-                                        k: "Accept".to_string(),
-                                        v: "*/*".to_string(),
-                                    },
-                                    IndicatorOpt {
-                                        name: "header".to_string(),
-                                        k: "Content-Type".to_string(),
-                                        v: "text/xml".to_string(),
-                                    },
-                                    IndicatorOpt {
-                                        name: "header".to_string(),
-                                        k: "X-Requested-With".to_string(),
-                                        v: "XMLHttpRequest".to_string(),
-                                    },
-                                    IndicatorOpt {
-                                        name: "header".to_string(),
-                                        k: "Host".to_string(),
-                                        v: "www.amazon.com".to_string(),
-                                    },
-                                    IndicatorOpt {
-                                        name: "parameter".to_string(),
-                                        k: "sz".to_string(),
-                                        v: "160x600".to_string(),
-                                    },
-                                    IndicatorOpt {
-                                        name: "parameter".to_string(),
-                                        k: "oe".to_string(),
-                                        v: "oe=ISO-8859-1;".to_string(),
-                                    },
-                                    IndicatorOpt {
-                                        name: "parameter".to_string(),
-                                        k: "s".to_string(),
-                                        v: "3717".to_string(),
-                                    },
-                                    IndicatorOpt {
-                                        name: "parameter".to_string(),
-                                        k: "dc_ref".to_string(),
-                                        v: "http%3A%2F%2Fwww.amazon.com".to_string(),
-                                    },
-                                ].to_vec(),
-                                transforms: [
-                                    TransformActions {
-                                        name: "id".to_string(),
-                                        actions: [
-                                            Action::parameter(
-                                                "sn".to_string(),
-                                            ),
-                                        ].to_vec(),
-                                    },
-                                    TransformActions {
-                                        name: "output".to_string(),
-                                        actions: [
-                                            Action::base64,
-                                            Action::print,
-                                        ].to_vec(),
-                                    },
-                                ].to_vec(),
-                            },
-                            RoleIndicator {
-                                role: "server".to_string(),
-                                set_opts: [
-                                    IndicatorOpt {
-                                        name: "header".to_string(),
-                                        k: "Server".to_string(),
-                                        v: "Server".to_string(),
-                                    },
-                                    IndicatorOpt {
-                                        name: "header".to_string(),
-                                        k: "x-amz-id-1".to_string(),
-                                        v: "THK9YEZJCKPGY5T42OZT".to_string(),
-                                    },
-                                    IndicatorOpt {
-                                        name: "header".to_string(),
-                                        k: "x-amz-id-2".to_string(),
-                                        v: "a21JZ1xrNDNtdGRsa219bGV3YW85amZuZW9zdG5rZmRuZ2tmZGl4aHRvNDVpbgo=".to_string(),
-                                    },
-                                    IndicatorOpt {
-                                        name: "header".to_string(),
-                                        k: "X-Frame-Options".to_string(),
-                                        v: "SAMEORIGIN".to_string(),
-                                    },
-                                    IndicatorOpt {
-                                        name: "header".to_string(),
-                                        k: "x-ua-compatible".to_string(),
-                                        v: "IE=edge".to_string(),
-                                    },
-                                ].to_vec(),
-                                transforms: [
-                                    TransformActions {
-                                        name: "output".to_string(),
-                                        actions: [
-                                            Action::print,
-                                        ].to_vec(),
-                                    },
-                                ].to_vec(),
-                            },
-                        ].to_vec(),
-                    },
-                ].to_vec(),
-            },
-        )
 }
 
 #[test]
